@@ -77,7 +77,6 @@ async def lifespan(app: FastAPI):
     dedup_service = DedupService(settings)
     memory_service = MemoryService()
     auth_service = AuthService(
-        db_path="data/auth.db",
         secret_key=settings.secret_key,
         access_token_expire_minutes=settings.access_token_expire_minutes,
     )
@@ -488,9 +487,9 @@ async def list_conversations():
 async def get_conversation(conv_id: str):
     from services.conversation_store import conversation_store
     conv = conversation_store.get_conversation(conv_id)
-    if not conv:
+    if conv is None:
         raise HTTPException(status_code=404, detail="对话不存在")
-    return conv
+    return {"messages": conv}
 
 
 @app.post("/api/conversations")

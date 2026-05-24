@@ -1,17 +1,19 @@
-import sqlite3
-import os
 import uuid
 import hashlib
 import secrets
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 
+from .database import get_db, DB
+
+logger = logging.getLogger(__name__)
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-DEFAULT_DB_PATH = "data/auth.db"
 DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
@@ -24,52 +26,42 @@ def _hash_token(token: str) -> str:
 class AuthService:
     def __init__(
         self,
-        db_path: str = DEFAULT_DB_PATH,
         secret_key: str = DEFAULT_SECRET_KEY,
         access_token_expire_minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES,
         refresh_token_expire_days: int = REFRESH_TOKEN_EXPIRE_DAYS,
     ):
-        self.db_path = db_path
+        self.db = get_db()
         self.secret_key = secret_key
         self.access_token_expire_minutes = access_token_expire_minutes
         self.refresh_token_expire_days = refresh_token_expire_days
-        os.makedirs(os.path.dirname(self.db_path) if os.path.dirname(self.db_path) else ".", exist_ok=True)
         self._init_db()
 
-    def _get_conn(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
-
     def _init_db(self):
-        with self._get_conn() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE NOT NULL,
-                    username TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    avatar_url TEXT,
-                    is_active INTEGER DEFAULT 1,
-                    failed_attempts INTEGER DEFAULT 0,
-                    locked_until TEXT,
-                    created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now'))
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS refresh_tokens (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    token_hash TEXT UNIQUE NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    created_at TEXT DEFAULT (datetime('now'))
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_refresh_hash ON refresh_tokens(token_hash)")
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                avatar_url TEXT,
+                is_active INTEGER DEFAULT 1,
+                failed_attempts INTEGER DEFAULT 0,
+                locked_until TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS refresh_tokens (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash TEXT UNIQUE NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_refresh_hash ON refresh_tokens(token_hash)")
         self._cleanup_expired_tokens()
 
     def register(self, email: str, username: str, password: str) -> Tuple[str, dict]:
@@ -80,20 +72,17 @@ class AuthService:
         user_id = str(uuid.uuid4())
         password_hash = pwd_context.hash(password)
 
-        with self._get_conn() as conn:
-            try:
-                conn.execute(
-                    "INSERT INTO users (id, email, username, password_hash) VALUES (?, ?, ?, ?)",
-                    (user_id, email.lower().strip(), username.strip(), password_hash),
-                )
-            except sqlite3.IntegrityError as e:
-                msg = str(e).lower()
-                if "email" in msg:
-                    raise ValueError("该邮箱已被注册")
-                elif "username" in msg:
-                    raise ValueError("该用户名已被使用")
-                else:
-                    raise ValueError("注册失败，请稍后重试")
+        existing = self.db.execute(
+            "SELECT id FROM users WHERE email = ? OR username = ?",
+            (email.lower().strip(), username.strip()),
+        ).fetchone()
+        if existing:
+            raise ValueError("该邮箱或用户名已被使用")
+
+        self.db.execute(
+            "INSERT INTO users (id, email, username, password_hash) VALUES (?, ?, ?, ?)",
+            (user_id, email.lower().strip(), username.strip(), password_hash),
+        )
 
         tokens = self._create_tokens(user_id)
         return user_id, {
@@ -106,11 +95,10 @@ class AuthService:
         }
 
     def login(self, email: str, password: str) -> dict:
-        with self._get_conn() as conn:
-            user = conn.execute(
-                "SELECT id, email, username, password_hash, avatar_url, is_active, failed_attempts, locked_until FROM users WHERE email = ?",
-                (email.lower().strip(),),
-            ).fetchone()
+        user = self.db.execute(
+            "SELECT id, email, username, password_hash, avatar_url, is_active, failed_attempts, locked_until FROM users WHERE email = ?",
+            (email.lower().strip(),),
+        ).fetchone()
 
         if not user:
             raise ValueError("邮箱或密码错误")
@@ -149,12 +137,10 @@ class AuthService:
 
     def refresh(self, refresh_token: str) -> dict:
         token_hash = _hash_token(refresh_token)
-
-        with self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = ?",
-                (token_hash,),
-            ).fetchone()
+        row = self.db.execute(
+            "SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()
 
         if not row:
             raise ValueError("无效的刷新令牌")
@@ -168,11 +154,10 @@ class AuthService:
         return self._create_tokens(row["user_id"])
 
     def get_user(self, user_id: str) -> Optional[dict]:
-        with self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT id, email, username, avatar_url, is_active, created_at FROM users WHERE id = ?",
-                (user_id,),
-            ).fetchone()
+        row = self.db.execute(
+            "SELECT id, email, username, avatar_url, is_active, created_at FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
 
         if not row:
             return None
@@ -218,46 +203,33 @@ class AuthService:
         token = secrets.token_urlsafe(64)
         token_hash = _hash_token(token)
         expires_at = (datetime.now() + timedelta(days=self.refresh_token_expire_days)).isoformat()
-
-        with self._get_conn() as conn:
-            conn.execute(
-                "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
-                (str(uuid.uuid4()), user_id, token_hash, expires_at),
-            )
-
+        self.db.execute(
+            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
+            (str(uuid.uuid4()), user_id, token_hash, expires_at),
+        )
         return token
 
     def _delete_refresh_token_by_hash(self, token_hash: str):
-        with self._get_conn() as conn:
-            conn.execute("DELETE FROM refresh_tokens WHERE token_hash = ?", (token_hash,))
+        self.db.execute("DELETE FROM refresh_tokens WHERE token_hash = ?", (token_hash,))
 
     def _cleanup_expired_tokens(self):
-        with self._get_conn() as conn:
-            conn.execute(
-                "DELETE FROM refresh_tokens WHERE expires_at < datetime('now')"
-            )
+        self.db.execute("DELETE FROM refresh_tokens WHERE expires_at < datetime('now')")
 
     def _increment_failed_attempts(self, user_id: str):
-        with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE users SET failed_attempts = failed_attempts + 1 WHERE id = ?",
-                (user_id,),
-            )
+        self.db.execute(
+            "UPDATE users SET failed_attempts = failed_attempts + 1 WHERE id = ?",
+            (user_id,),
+        )
 
     def _reset_failed_attempts(self, user_id: str):
-        with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?",
-                (user_id,),
-            )
+        self.db.execute(
+            "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?",
+            (user_id,),
+        )
 
     def _lock_account(self, user_id: str):
         locked_until = (datetime.now() + timedelta(minutes=15)).isoformat()
-        with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE users SET locked_until = ? WHERE id = ?",
-                (locked_until, user_id),
-            )
+        self.db.execute("UPDATE users SET locked_until = ? WHERE id = ?", (locked_until, user_id))
 
     @staticmethod
     def _validate_email(email: str):

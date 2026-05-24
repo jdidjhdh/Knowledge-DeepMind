@@ -5,15 +5,6 @@ import { useDropzone } from "react-dropzone";
 import { Upload, FileText, Globe, CheckCircle, XCircle, Loader2, Link } from "lucide-react";
 import { api } from "@/lib/api";
 
-const fileTypes = [
-  { value: "auto", label: "自动检测（推荐）" },
-  { value: "pdf", label: "PDF 文档" }, { value: "word", label: "Word 文档" },
-  { value: "ppt", label: "PPT 演示" }, { value: "image", label: "图片" },
-  { value: "web", label: "网页文件" }, { value: "table", label: "表格" },
-  { value: "code", label: "代码" }, { value: "text", label: "纯文本" },
-  { value: "video", label: "视频" }, { value: "audio", label: "音频" },
-];
-
 const extTypeMap: Record<string, string> = {
   ".pdf": "pdf",
   ".doc": "word", ".docx": "word",
@@ -37,7 +28,6 @@ function detectFileType(fileName: string): string {
 interface UploadTask { id: string; fileName: string; status: "uploading" | "processing" | "completed" | "failed"; error?: string; chunks?: number; extracted?: boolean; }
 
 export default function UploadContent() {
-  const [fileType, setFileType] = useState("auto");
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [urlInput, setUrlInput] = useState("");
   const [urlLoading, setUrlLoading] = useState(false);
@@ -52,7 +42,7 @@ export default function UploadContent() {
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     for (const file of acceptedFiles) {
       const taskId = addTask(file.name);
-      const detectedType = fileType === "auto" ? detectFileType(file.name) : fileType;
+      const detectedType = detectFileType(file.name);
       try {
         const result = await api.ingestFile(file, detectedType);
         const chunks = result.result?.chunks || [];
@@ -65,7 +55,7 @@ export default function UploadContent() {
         });
       } catch (err: unknown) { updateTask(taskId, { status: "failed", error: err instanceof Error ? err.message : "上传失败" }); }
     }
-  }, [fileType]);
+  }, []);
 
   const ingestUrl = async () => {
     const url = urlInput.trim(); if (!url || urlLoading) return;
@@ -84,14 +74,7 @@ export default function UploadContent() {
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="card">
         <h1 className="text-xl font-bold flex items-center gap-2 mb-2"><Upload className="w-6 h-6 text-primary-600" />上传文件</h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">上传文件后 AI 将自动解析内容、提取知识点、构建知识图谱</p>
-        <div className="mb-4">
-          <label className="block text-sm font-medium mb-2">文件类型</label>
-          <select value={fileType} onChange={(e) => setFileType(e.target.value)} className="input-field">
-            {fileTypes.map((ft) => (<option key={ft.value} value={ft.value}>{ft.label}</option>))}
-          </select>
-          <p className="text-xs text-gray-400 mt-1">{fileType === "auto" ? "将根据文件扩展名自动识别类型，无需手动选择" : "已强制指定文件类型，覆盖自动检测"}</p>
-        </div>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">上传文件后 AI 将自动解析内容、提取知识点、构建知识图谱。系统会根据文件扩展名自动识别类型。</p>
         <div {...getRootProps()} className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors ${isDragActive ? "border-primary-500 bg-primary-50 dark:bg-primary-900/20" : "border-gray-300 dark:border-gray-600 hover:border-primary-400"}`}>
           <input {...getInputProps()} />
           <Upload className="w-12 h-12 mx-auto mb-4 text-gray-400" />
