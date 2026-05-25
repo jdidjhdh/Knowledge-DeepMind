@@ -194,6 +194,7 @@ export const api = {
     onStatus?: (status: { status: string; message: string }) => void,
     onWebResults?: (results: Record<string, unknown>[]) => void,
     onWarning?: (warning: { message: string; low_confidence: { count: number; items: Array<{ id: string; fact: string; confidence: number; source: string; source_quality: number }>; is_critical: boolean } }) => void,
+    onMetadata?: (metadata: Record<string, unknown>) => void,
     enableWebSearch: boolean = true
   ) => {
     const res = await fetch(`${API_BASE}/chat`, {
@@ -224,6 +225,7 @@ export const api = {
             if (parsed.type === "status" && onStatus) onStatus(parsed);
             if (parsed.web_results && onWebResults) onWebResults(parsed.web_results);
             if (parsed.type === "warning" && onWarning) onWarning(parsed);
+            if (parsed.metadata && onMetadata) onMetadata(parsed.metadata);
           } catch {}
         }
       }

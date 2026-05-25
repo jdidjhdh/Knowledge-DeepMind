@@ -2,6 +2,8 @@ import json
 import logging
 import uuid
 import os
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 import numpy as np
 from typing import Optional
 
@@ -88,6 +90,15 @@ class VectorService:
             data["confidence"] = max(data.get("confidence", 0.5), sim)
             results.append(KnowledgePoint(**data))
         return results
+
+    async def search_with_scores(self, query: str, top_k: int = 10) -> list[tuple[float, dict]]:
+        query_vector = self._text_to_vector(query)
+        scores = []
+        for kp_id, item in self.knowledge_index.items():
+            sim = self._cosine_similarity(query_vector, item["vector"])
+            scores.append((sim, item["data"]))
+        scores.sort(key=lambda x: x[0], reverse=True)
+        return scores[:top_k]
 
     async def search_documents(self, query: str, top_k: int = 5) -> list[DocumentChunk]:
         query_vector = self._text_to_vector(query)

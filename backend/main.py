@@ -1,5 +1,9 @@
 import logging
 import os
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 import base64
 import uuid
 import json
@@ -34,6 +38,7 @@ from services.ingestion.file_handler import FileHandler
 from services.extraction.knowledge_extractor import KnowledgeExtractor
 from services.graph.neo4j_service import GraphService
 from services.graph.vector_service import VectorService
+from services.graph.bm25_service import BM25Service
 from services.agent.conversation_agent import ConversationAgent
 from services.agent.search_service import SearchService
 from services.agent.web_search_service import WebSearchService
@@ -53,6 +58,7 @@ file_handler: FileHandler = None
 knowledge_extractor: KnowledgeExtractor = None
 graph_service: GraphService = None
 vector_service: VectorService = None
+bm25_service: BM25Service = None
 conversation_agent: ConversationAgent = None
 search_service: SearchService = None
 web_search_service: WebSearchService = None
@@ -66,7 +72,7 @@ auth_service: AuthService = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global file_handler, knowledge_extractor, graph_service, vector_service
+    global file_handler, knowledge_extractor, graph_service, vector_service, bm25_service
     global conversation_agent, search_service, web_search_service, confidence_calculator
     global category_service, dedup_service, memory_service, auth_service
 
@@ -74,6 +80,7 @@ async def lifespan(app: FastAPI):
     file_handler = FileHandler(settings)
     graph_service = GraphService(settings)
     vector_service = VectorService(settings)
+    bm25_service = BM25Service()
     dedup_service = DedupService(settings)
     memory_service = MemoryService()
     auth_service = AuthService(
@@ -85,13 +92,15 @@ async def lifespan(app: FastAPI):
     category_service = CategoryService(settings, vector_service, graph_service, confidence_calculator)
     knowledge_extractor = KnowledgeExtractor(settings, confidence_calculator, category_service)
     conversation_agent = ConversationAgent(settings, vector_service, graph_service, knowledge_extractor, web_search_service, category_service, dedup_service, memory_service)
-    search_service = SearchService(vector_service, graph_service)
+    search_service = SearchService(vector_service, graph_service, bm25_service)
     time_extraction_service = TimeExtractionService()
 
     await graph_service.initialize()
     await vector_service.initialize()
     await dedup_service.initialize()
     await category_service.initialize()
+
+    search_service.sync_bm25_from_vector()
 
     logger.info("知识库智能体服务初始化完成")
     yield
@@ -281,61 +290,70 @@ async def ingest_file(
     file_size = len(content)
     await file.seek(0)
 
-    dedup_info = None
-    if dedup_service and not force_ingest:
-        hash_match, matched = dedup_service.check_file_hash(content)
-        if hash_match and matched:
-            matched_name = matched.get("file_name", "未知")
-            action, message, is_dup = dedup_service.determine_action(True, 0.0)
-            if action == "skip":
-                await dedup_service.log_duplicate(file.filename, f"哈希匹配严格跳过: {matched_name}", matched_name)
-                return IngestionTask(
-                    task_id=str(uuid.uuid4()),
-                    file_path=file.filename or "",
-                    file_type=file_type,
-                    status="skipped",
-                    error=f"[去重] {message} (匹配文件: {matched_name})",
-                    result={"dedup": {"action": "skip", "reason": "hash_match", "matched_file": matched_name}},
-                )
-            dedup_info = {"hash_match": True, "matched_file": matched_name, "message": message}
-
     try:
+        dedup_info = None
+        if dedup_service and not force_ingest:
+            try:
+                hash_match, matched = dedup_service.check_file_hash(content)
+                if hash_match and matched:
+                    matched_name = matched.get("file_name", "未知")
+                    action, message, is_dup = dedup_service.determine_action(True, 0.0)
+                    if action == "skip":
+                        await dedup_service.log_duplicate(file.filename, f"哈希匹配严格跳过: {matched_name}", matched_name)
+                        return IngestionTask(
+                            task_id=str(uuid.uuid4()),
+                            file_path=file.filename or "",
+                            file_type=file_type,
+                            status="skipped",
+                            error=f"[去重] {message} (匹配文件: {matched_name})",
+                            result={"dedup": {"action": "skip", "reason": "hash_match", "matched_file": matched_name}},
+                        )
+                    dedup_info = {"hash_match": True, "matched_file": matched_name, "message": message}
+            except Exception as e:
+                logger.warning(f"[去重] 去重检查异常: {e}")
+
         result = await file_handler.process_file(file, file_type)
         if result.status == "completed":
             try:
-                chunks_data = result.result.get("chunks", [])
+                chunks_data = result.result.get("chunks", []) if result.result else []
                 if chunks_data:
                     chunks = [DocumentChunk(**c) for c in chunks_data]
                     knowledge_points = await knowledge_extractor.extract_from_chunks(chunks)
 
                     if dedup_service and not force_ingest:
                         combined_text = " ".join([kp.fact for kp in knowledge_points])[:3000]
-                        max_sim, similar = await dedup_service.check_content_similarity(combined_text)
-                        if max_sim > 0:
-                            action, message, is_dup = dedup_service.determine_action(
-                                dedup_info.get("hash_match", False) if dedup_info else False, max_sim
-                            )
-                            dedup_info = dedup_info or {}
-                            dedup_info["content_similarity"] = max_sim
-                            dedup_info["similar_files"] = similar
-                            dedup_info["action"] = action
-                            dedup_info["message"] = message
-                            if action == "skip":
-                                await dedup_service.log_duplicate(file.filename, f"内容相似严格跳过(sim={max_sim:.2f})")
-                                result.result["dedup"] = dedup_info
-                                result.status = "skipped"
-                                result.error = f"[去重] {message}"
-                                return result
+                        try:
+                            max_sim, similar = await dedup_service.check_content_similarity(combined_text)
+                            if max_sim > 0:
+                                action, message, is_dup = dedup_service.determine_action(
+                                    dedup_info.get("hash_match", False) if dedup_info else False, max_sim
+                                )
+                                dedup_info = dedup_info or {}
+                                dedup_info["content_similarity"] = max_sim
+                                dedup_info["similar_files"] = similar
+                                dedup_info["action"] = action
+                                dedup_info["message"] = message
+                                if action == "skip":
+                                    await dedup_service.log_duplicate(file.filename, f"内容相似严格跳过(sim={max_sim:.2f})")
+                                    result.result["dedup"] = dedup_info
+                                    result.status = "skipped"
+                                    result.error = f"[去重] {message}"
+                                    return result
+                        except Exception as e:
+                            logger.warning(f"[去重] 内容相似度检查异常: {e}")
 
                     for kp in knowledge_points:
-                        await vector_service.index_knowledge_point(kp)
-                    triples = await knowledge_extractor.extract_triples(knowledge_points)
+                        try:
+                            await vector_service.index_knowledge_point(kp)
+                        except Exception as e:
+                            logger.warning(f"[向量] 索引知识失败: {e}")
                     try:
+                        triples = await knowledge_extractor.extract_triples(knowledge_points)
                         await graph_service.create_triples(triples)
                     except Exception as e:
-                        logger.warning(f"[图谱] 三元组创建失败: {e}")
+                        logger.warning(f"[图谱] 三元组提取或创建失败: {e}")
 
-                code_analysis = result.result.get("code_analysis")
+                code_analysis = result.result.get("code_analysis") if result.result else None
                 if code_analysis and graph_service and graph_service.driver:
                     try:
                         await graph_service.create_code_structure(
@@ -350,25 +368,29 @@ async def ingest_file(
                         logger.warning(f"[图谱] 代码结构存入失败: {e}")
 
                 if dedup_service:
-                    combined_text = " ".join([
-                        c.get("content", "") for c in chunks_data
-                    ])[:5000]
-                    await dedup_service.register_file(
-                        content=content,
-                        file_name=file.filename or "",
-                        file_size=file_size,
-                        file_type=file_type,
-                        saved_path=result.result.get("saved_path", ""),
-                        task_id=result.task_id,
-                        content_text=combined_text,
-                    )
+                    try:
+                        combined_text = " ".join([
+                            c.get("content", "") for c in chunks_data
+                        ])[:5000] if chunks_data else ""
+                        await dedup_service.register_file(
+                            content=content,
+                            file_name=file.filename or "",
+                            file_size=file_size,
+                            file_type=file_type,
+                            saved_path=result.result.get("saved_path", "") if result.result else "",
+                            task_id=result.task_id,
+                            content_text=combined_text,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[去重] 注册文件失败: {e}")
 
-                if dedup_info:
+                if dedup_info and result.result:
                     result.result["dedup"] = dedup_info
 
             except Exception as e:
                 logger.error(f"[摄取] 知识提取/索引失败 (文件已保存): {e}")
-                result.result["indexing_error"] = str(e)
+                if result.result:
+                    result.result["indexing_error"] = str(e)
         return result
     except Exception as e:
         logger.error(f"[摄取] 未预期错误: {e}", exc_info=True)
@@ -668,6 +690,73 @@ async def list_knowledge(
     return KnowledgeListResponse(data=paged, pagination=pagination)
 
 
+@app.get("/api/knowledge/health-report")
+async def get_knowledge_health_report():
+    if not vector_service:
+        raise HTTPException(status_code=503, detail="服务未初始化")
+
+    all_data = await vector_service.list_all(0, 10000)
+    total = len(all_data)
+
+    if total == 0:
+        return {"status": "empty", "message": "知识库中暂无数据"}
+
+    conf_dist = {"low": 0, "medium": 0, "high": 0}
+    category_dist: dict[str, int] = {}
+    has_graph_entity = 0
+    no_graph_entity = 0
+
+    for kp_data in all_data:
+        conf = kp_data.get("confidence", 0.5)
+        if conf < 0.4:
+            conf_dist["low"] += 1
+        elif conf < 0.7:
+            conf_dist["medium"] += 1
+        else:
+            conf_dist["high"] += 1
+
+        cat = str(kp_data.get("category", "未分类"))
+        category_dist[cat] = category_dist.get(cat, 0) + 1
+
+        entities = kp_data.get("related_entities", [])
+        if entities:
+            has_graph_entity += 1
+        else:
+            no_graph_entity += 1
+
+    low_conf_ratio = conf_dist["low"] / total if total else 0
+    graph_coverage = has_graph_entity / total if total else 0
+
+    sparse_categories = [k for k, v in category_dist.items() if v <= 2]
+    top_sources = sorted(
+        [(kp.get("source", "未知")[:50]) for kp in all_data],
+        key=lambda s: sum(1 for kp in all_data if kp.get("source", "")[:50] == s),
+        reverse=True,
+    )
+    top_sources_unique = list(dict.fromkeys(top_sources))[:5]
+
+    suggestions = []
+    if low_conf_ratio > 0.3:
+        suggestions.append(f"低置信度知识占比 {low_conf_ratio:.0%}，建议运行自动复核")
+    if graph_coverage < 0.5:
+        suggestions.append(f"图谱覆盖率仅 {graph_coverage:.0%}，建议运行图谱同步")
+    if sparse_categories:
+        suggestions.append(f"稀疏分类（≤2条）：{', '.join(sparse_categories[:5])}，建议补充内容")
+    if no_graph_entity > total * 0.5:
+        suggestions.append(f"大量知识点缺少关联实体，建议重新提取知识三元组")
+
+    return {
+        "total_knowledge": total,
+        "confidence_distribution": conf_dist,
+        "low_confidence_ratio": round(low_conf_ratio, 3),
+        "graph_entity_coverage": round(graph_coverage, 3),
+        "category_distribution": dict(sorted(category_dist.items(), key=lambda x: x[1], reverse=True)[:10]),
+        "top_sources": top_sources_unique,
+        "sparse_categories": sparse_categories[:10],
+        "suggestions": suggestions[:5],
+    }
+
+
 @app.get("/api/knowledge/{knowledge_id}")
 async def get_knowledge(knowledge_id: str):
     if not vector_service:
@@ -867,6 +956,41 @@ async def get_graph_stats():
         raise HTTPException(status_code=503, detail="图谱服务未初始化")
     await graph_service.ensure_connected()
     return await graph_service.get_graph_stats()
+
+
+@app.get("/api/hallucination/metrics")
+async def get_hallucination_metrics():
+    if not conversation_agent:
+        raise HTTPException(status_code=503, detail="对话服务未初始化")
+    return conversation_agent.get_hallucination_metrics()
+
+
+@app.get("/api/hallucination/gaps")
+async def get_knowledge_gaps(limit: int = 50):
+    if not conversation_agent:
+        raise HTTPException(status_code=503, detail="对话服务未初始化")
+    gaps = conversation_agent.gap_records[-limit:]
+    return {"total": len(conversation_agent.gap_records), "gaps": gaps}
+
+
+@app.post("/api/hallucination/correct")
+async def record_correction(data: dict):
+    if not conversation_agent:
+        raise HTTPException(status_code=503, detail="对话服务未初始化")
+    query = data.get("query", "")
+    answer = data.get("answer", "")
+    conversation_agent.record_correction(query, answer)
+    return {"status": "recorded", "total_corrections": len(conversation_agent.correction_log)}
+
+
+@app.post("/api/hallucination/challenge")
+async def challenge_answer(data: dict):
+    if not conversation_agent:
+        raise HTTPException(status_code=503, detail="对话服务未初始化")
+    query = data.get("query", "")
+    reason = data.get("reason", "")
+    conversation_agent.record_gap(query, "challenged", reason)
+    return {"status": "challenged", "message": "已记录质疑，将影响后续检索权重"}
 
 
 @app.get("/api/graph/entity/{entity_name:path}")
@@ -2120,6 +2244,35 @@ async def delete_user_memory_item(
         raise HTTPException(status_code=503, detail="对话服务未初始化")
     deleted = await conversation_agent.delete_memory_item(user_id, memory_type, memory_key)
     return {"status": "deleted" if deleted else "not_found"}
+
+
+@app.post("/api/search/rewrite")
+async def rewrite_query(data: dict):
+    if not search_service:
+        raise HTTPException(status_code=503, detail="搜索服务未初始化")
+    query = data.get("query", "")
+    if not query:
+        raise HTTPException(status_code=400, detail="查询不能为空")
+    llm_client = conversation_agent.client if conversation_agent else None
+    user_profile = data.get("user_profile", None)
+    variants = await search_service.rewrite_queries(query, llm_client=llm_client, user_profile=user_profile)
+    return {"original": query, "variants": variants[1:], "all": variants}
+
+
+@app.post("/api/bm25/sync")
+async def sync_bm25_index():
+    if not search_service or not bm25_service:
+        raise HTTPException(status_code=503, detail="服务未初始化")
+    search_service.sync_bm25_from_vector()
+    return {"status": "synced", "count": bm25_service.count()}
+
+
+@app.get("/api/bm25/search")
+async def bm25_search(q: str = Query(...), top_k: int = Query(default=10)):
+    if not bm25_service:
+        raise HTTPException(status_code=503, detail="BM25服务未初始化")
+    results = bm25_service.search(q, top_k=top_k)
+    return {"query": q, "results": results, "count": len(results)}
 
 
 @app.get("/api/memory/stats")

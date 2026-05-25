@@ -29,6 +29,7 @@ minio_data/
 minio.exe
 neo4j/
 neo4j-chs/
+neo4j-chs*/
 neo4j-data/
 neo4j-logs/
 neo4j_data/
@@ -41,6 +42,7 @@ chi_sim.traineddata
 *.rar
 
 backend/data/
+backend/models/bge-*
 backend/tests/test_output*.txt
 backend/tests/*_report.json
 backend/tests/*_report.md

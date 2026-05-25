@@ -239,6 +239,37 @@ class ConversationRequest(BaseModel):
     enable_web_search: bool = True
 
 
+class AnswerMetadata(BaseModel):
+    retrieval_count: int = 0
+    avg_similarity: float = 0.0
+    max_similarity: float = 0.0
+    is_inferred: bool = False
+    is_below_threshold: bool = False
+    multi_source_verified: bool = False
+    conflict_count: int = 0
+    entities_anchored: list[str] = Field(default_factory=list)
+
+
+class KnowledgeGapRecord(BaseModel):
+    query: str
+    gap_type: str = "missing"
+    suggested_topic: Optional[str] = None
+    recorded_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    status: str = "pending"
+
+
+class HallucinationMetrics(BaseModel):
+    citation_missing_rate: float = 0.0
+    user_correction_rate: float = 0.0
+    low_confidence_answer_ratio: float = 0.0
+    unresolved_conflict_rate: float = 0.0
+    total_answers: int = 0
+    corrected_answers: int = 0
+    below_threshold_refusals: int = 0
+    multi_source_verified_answers: int = 0
+    knowledge_gaps_recorded: int = 0
+
+
 class ConversationResponse(BaseModel):
     answer: str
     conversation_id: str
@@ -247,6 +278,8 @@ class ConversationResponse(BaseModel):
     detected_conflicts: list[str] = Field(default_factory=list)
     knowledge_gaps: list[str] = Field(default_factory=list)
     low_confidence_info: Optional[dict] = None
+    tool_call_result: Optional[str] = None
+    answer_metadata: Optional[AnswerMetadata] = None
 
 
 class SearchRequest(BaseModel):

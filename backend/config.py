@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     max_upload_size_mb: int = 1024
 
-    embedding_model: str = "BAAI/bge-small-zh-v1.5"
-    vector_dim: int = 512
+    embedding_model: str = "BAAI/bge-large-zh-v1.5"
+    vector_dim: int = 1024
 
     secret_key: str = "dev-secret-key-change-in-production"
     access_token_expire_minutes: int = 60

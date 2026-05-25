@@ -1436,6 +1436,30 @@ class GraphService:
         except Exception:
             pass
 
+    async def delete_relation(self, source: str, target: str, relation_name: str = None):
+        if not self.driver:
+            return
+        try:
+            async with self.driver.session() as session:
+                if relation_name:
+                    await session.run(
+                        """
+                        MATCH (a {name: $src})-[r {relation: $rel}]->(b {name: $tgt})
+                        DELETE r
+                        """,
+                        src=source, tgt=target, rel=relation_name,
+                    )
+                else:
+                    await session.run(
+                        """
+                        MATCH (a {name: $src})-[r]->(b {name: $tgt})
+                        DELETE r
+                        """,
+                        src=source, tgt=target,
+                    )
+        except Exception as e:
+            logger.warning(f"删除关系失败: {e}")
+
     async def _cleanup_orphaned_nodes(self, session=None):
         if not self.driver:
             return

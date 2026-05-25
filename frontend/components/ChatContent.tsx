@@ -21,6 +21,15 @@ interface Message {
     items: Array<{ id: string; fact: string; confidence: number; source: string; source_quality: number }>;
     is_critical: boolean;
   };
+  answerMetadata?: {
+    retrieval_count: number;
+    avg_similarity: number;
+    max_similarity: number;
+    is_inferred: boolean;
+    is_below_threshold: boolean;
+    multi_source_verified: boolean;
+    conflict_count: number;
+  };
 }
 
 interface ConvMeta {
@@ -184,6 +193,11 @@ export default function ChatContent() {
               prev.map((m) => (m.id === assistantId ? { ...m, lowConfidence: warning.low_confidence } : m))
             );
           }
+        },
+        (metadata) => {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, answerMetadata: metadata } : m))
+          );
         },
         webSearchEnabled
       );
@@ -423,6 +437,54 @@ export default function ChatContent() {
                             </span>
                           ))}
                         </div>
+                      </div>
+                    )}
+
+                    {msg.answerMetadata && (
+                      <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+                        <div className="flex flex-wrap gap-1.5 text-[10px]">
+                          <span className="px-1.5 py-0.5 rounded bg-gray-50 dark:bg-gray-800 text-gray-500">
+                            📖 {msg.answerMetadata.retrieval_count}个片段
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-gray-50 dark:bg-gray-800 text-gray-500">
+                            📊 相似度 {msg.answerMetadata.avg_similarity.toFixed(2)}
+                          </span>
+                          {msg.answerMetadata.multi_source_verified && (
+                            <span className="px-1.5 py-0.5 rounded bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400">
+                              ✅ 多源验证
+                            </span>
+                          )}
+                          {msg.answerMetadata.is_inferred && (
+                            <span className="px-1.5 py-0.5 rounded bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-400">
+                              ⚠ 推断结论
+                            </span>
+                          )}
+                          {msg.answerMetadata.is_below_threshold && (
+                            <span className="px-1.5 py-0.5 rounded bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400">
+                              ⚡ 低质量检索
+                            </span>
+                          )}
+                          {msg.answerMetadata.conflict_count > 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400">
+                              ⚔ {msg.answerMetadata.conflict_count}个冲突
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await fetch("/api/hallucination/challenge", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ query: "标记问题回答", reason: "用户质疑" }),
+                              });
+                              alert("已记录您的质疑，感谢反馈！");
+                            } catch { alert("反馈失败"); }
+                          }}
+                          className="mt-1 text-[10px] text-gray-400 hover:text-red-500 transition-colors"
+                        >
+                          🚩 此回答有问题？点击标记
+                        </button>
                       </div>
                     )}
 

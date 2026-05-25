@@ -75,6 +75,8 @@ export default function GraphContent() {
   const [showPanel, setShowPanel] = useState(false);
   const [showLegend, setShowLegend] = useState(false);
   const [hops, setHops] = useState(1);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
 
   const graphRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -120,7 +122,8 @@ export default function GraphContent() {
     try {
       const data = await api.exploreGraph(e || "", 100, hops);
       setGraphData({ nodes: data?.nodes || [], edges: data?.edges || [] });
-    } catch {
+    } catch (e) {
+      console.error("加载图谱失败:", e);
       setGraphData({ nodes: [], edges: [] });
     } finally {
       setLoading(false);
@@ -350,9 +353,11 @@ export default function GraphContent() {
               onClick={async () => {
                 try {
                   const r = await api.syncGraph(true, true);
-                  alert(`同步完成: ${r.triples} 三元组, ${r.node_count} 节点`);
+                  console.log("重新同步完成:", r);
+                  await new Promise(r => setTimeout(r, 500));
                   loadGraph();
-                } catch (e) { alert("同步失败: " + e); }
+                  loadStats();
+                } catch (e) { console.error("重新同步失败:", e); alert("同步失败: " + e); }
               }}
               className="btn-secondary text-xs"
             >
@@ -371,9 +376,29 @@ export default function GraphContent() {
           <GitGraph className="w-12 h-12 mx-auto mb-3 opacity-50" />
           <p>暂无图谱数据</p>
           <p className="text-sm mt-1">上传文件并提取知识后，图谱将自动构建</p>
-          <button onClick={() => api.syncGraph(true, true).then(() => loadGraph())} className="btn-primary mt-4">
-            同步图谱数据
+          <button
+            onClick={async () => {
+              setSyncing(true);
+              setSyncMsg("正在同步图谱数据...");
+              try {
+                const r = await api.syncGraph(true, true);
+                setSyncMsg(`同步完成: ${r.triples || 0} 三元组`);
+                await new Promise(r => setTimeout(r, 500));
+                await loadGraph();
+                await loadStats();
+              } catch (e: any) {
+                setSyncMsg("同步失败: " + (e?.message || e));
+                console.error("同步图谱失败:", e);
+              } finally {
+                setSyncing(false);
+              }
+            }}
+            disabled={syncing}
+            className="btn-primary mt-4"
+          >
+            {syncing ? "同步中..." : "同步图谱数据"}
           </button>
+          {syncMsg && <p className="text-xs mt-2 text-gray-400">{syncMsg}</p>}
         </div>
       ) : (
         <div ref={containerRef} className="card overflow-hidden relative" style={{ height: "700px" }}>
