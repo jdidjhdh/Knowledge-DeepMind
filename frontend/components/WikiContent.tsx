@@ -9,19 +9,12 @@ import {
 } from "lucide-react";
 import { api, KnowledgePoint } from "@/lib/api";
 import { useDebounce } from "@/lib/useDebounce";
+import { getConfidenceBadgeColor, isLowConfidence } from "@/lib/confidence";
 import ClassificationPanel from "./ClassificationPanel";
 import PaginationBar from "./PaginationBar";
 import { SkeletonCard, SkeletonGrid, SkeletonInfoBar } from "./SkeletonCard";
 
-const LOW_CONFIDENCE_THRESHOLD = 0.4;
 const DEFAULT_PAGE_SIZE = 20;
-const SCROLL_STORAGE_KEY = "wiki_scroll_pos";
-
-const confidenceColor = (c: number) =>
-  c >= 0.8 ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-    : c >= 0.6 ? "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300"
-    : c >= LOW_CONFIDENCE_THRESHOLD ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300"
-    : "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300";
 
 const categoryColor: Record<string, string> = {
   "概念": "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300",
@@ -422,13 +415,13 @@ export default function WikiContent() {
     }
   }
 
-  const isLowConfidence = (kp: KnowledgePoint) =>
-    (kp.confidence < LOW_CONFIDENCE_THRESHOLD) && kp.status !== "error" && kp.status !== "replaced";
+  const isLowConfidenceKp = (kp: KnowledgePoint) =>
+    isLowConfidence(kp.confidence) && kp.status !== "error" && kp.status !== "replaced";
 
   const selectedInView = Array.from(selected).filter((id) => allPoints.some((kp) => kp.id === id)).length;
 
   const renderKnowledgeCard = (kp: KnowledgePoint, i: number) => {
-    const isLow = isLowConfidence(kp);
+    const isLow = isLowConfidenceKp(kp);
     const evidence = evidenceMap[kp.id || ""];
     const isLoadingEv = loadingEvidence.has(kp.id || "");
     const codeInfo = isCodeKnowledge(kp);
@@ -600,7 +593,7 @@ export default function WikiContent() {
             >
               {isAutoCategorizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
             </button>
-            <span className={`px-2 py-1 text-xs rounded-full ${confidenceColor(kp.confidence)}`}>
+            <span className={`px-2 py-1 text-xs rounded-full ${getConfidenceBadgeColor(kp.confidence)}`}>
               置信度: {kp.confidence.toFixed(2)}
             </span>
             <span className={`px-2 py-1 text-xs rounded-full ${categoryColor[kp.category] || categoryColor["待验证"]}`}>

@@ -7,6 +7,8 @@ import {
   Sparkles
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { getConfidenceDotColor, getConfidenceTier } from "@/lib/confidence";
+import { formatDateTime, formatDateShort } from "@/lib/formatTime";
 
 interface TimelineGroup {
   time_key: string;
@@ -72,38 +74,6 @@ const GRANULARITY_LABELS: Record<Granularity, string> = {
   month: "月",
   day: "日",
 };
-
-const CONFIDENCE_COLORS: Record<string, string> = {
-  high: "bg-green-500",
-  medium: "bg-yellow-500",
-  low: "bg-red-500",
-};
-
-function getConfidenceColor(conf: number): string {
-  if (conf >= 0.8) return CONFIDENCE_COLORS.high;
-  if (conf >= 0.5) return CONFIDENCE_COLORS.medium;
-  return CONFIDENCE_COLORS.low;
-}
-
-function getConfidenceTier(conf: number): string {
-  if (conf >= 0.8) return "高";
-  if (conf >= 0.5) return "中";
-  return "低";
-}
-
-function formatDateTime(iso?: string) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return d.toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  });
-}
-
-function formatDate(iso?: string) {
-  if (!iso) return "";
-  return iso.slice(0, 10);
-}
 
 export default function TimelineContent() {
   const [query, setQuery] = useState("");
@@ -499,7 +469,7 @@ export default function TimelineContent() {
                         <div className="space-y-3">
                           {filteredItems.map((item, i) => {
                             const conf = (item.confidence as number) || 0.5;
-                            const colorClass = getConfidenceColor(conf);
+                            const colorClass = getConfidenceDotColor(conf);
                             const hasEventTime = item.event_time as string | undefined;
                             const isRecordOnly = mode === "event_time" && !hasEventTime;
 
@@ -522,7 +492,7 @@ export default function TimelineContent() {
                                     </div>
                                     <span className="text-xs text-gray-400 whitespace-nowrap shrink-0 tabular-nums">
                                       {item.event_time
-                                        ? formatDate(item.event_time as string)
+                                        ? formatDateShort(item.event_time as string)
                                         : formatDateTime(item.created_at as string)}
                                     </span>
                                   </div>
@@ -541,7 +511,7 @@ export default function TimelineContent() {
                                     </span>
                                     <span className="flex items-center gap-1">
                                       <span className={`w-2 h-2 rounded-full ${colorClass}`} />
-                                      置信度: {conf.toFixed(2)} ({getConfidenceTier(conf)})
+                                      置信度: {conf.toFixed(2)} ({getConfidenceTier(conf).label})
                                     </span>
                                     {(item.time_precision as string) && (
                                       <span className="text-gray-400">

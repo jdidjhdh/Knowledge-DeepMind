@@ -18,8 +18,13 @@ async function request<T>(
     ...options,
   });
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err || `HTTP ${res.status}`);
+    const text = await res.text();
+    let msg = text || `HTTP ${res.status}`;
+    try {
+      const data = JSON.parse(text);
+      msg = data.detail || data.message || msg;
+    } catch {}
+    throw new Error(msg);
   }
   return res.json();
 }
@@ -153,7 +158,15 @@ export const api = {
         body: formData,
         signal: controller.signal,
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const errorText = await res.text();
+        let msg = errorText || "上传失败";
+        try {
+          const data = JSON.parse(errorText);
+          msg = data.detail || data.message || msg;
+        } catch {}
+        throw new Error(msg);
+      }
       invalidateCache();
       return res.json();
     } finally {
@@ -202,7 +215,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, conversation_id: conversationId, stream: true, enable_web_search: enableWebSearch }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      const errorText = await res.text();
+      let msg = errorText || "对话失败";
+      try {
+        const data = JSON.parse(errorText);
+        msg = data.detail || data.message || msg;
+      } catch {}
+      throw new Error(msg);
+    }
     const reader = res.body?.getReader();
     if (!reader) throw new Error("No stream reader");
     const decoder = new TextDecoder();

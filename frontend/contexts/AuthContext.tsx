@@ -139,17 +139,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     const data = await res.json();
     saveTokens(data.access_token, data.refresh_token);
-    setUser({
-      user_id: data.user_id,
-      email: data.email,
-      username: data.username,
-    });
-  }, [saveTokens]);
+    const u = await fetchMe(data.access_token);
+    if (u) setUser(u);
+  }, [saveTokens, fetchMe]);
 
   const logout = useCallback(() => {
     clearTokens();
     setUser(null);
+    try {
+      localStorage.setItem("auth_logout", Date.now().toString());
+    } catch {}
+    try {
+      const bc = new BroadcastChannel("auth_sync");
+      bc.postMessage({ type: "logout" });
+      bc.close();
+    } catch {}
   }, [clearTokens]);
+
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "auth_logout" && e.newValue) {
+        setUser(null);
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel("auth_sync");
+      bc.onmessage = (event) => {
+        if (event.data?.type === "logout") {
+          setUser(null);
+        }
+      };
+    } catch {}
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      if (bc) bc.close();
+    };
+  }, []);
 
   return (
     <AuthContext.Provider

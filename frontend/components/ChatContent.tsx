@@ -5,6 +5,7 @@ import { Send, Bot, User, Loader2, AlertTriangle, BookOpen, Sparkles, Plus, Tras
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
+import { formatConversationTime } from "@/lib/formatTime";
 import { motion, AnimatePresence } from "framer-motion";
 
 interface Message {
@@ -196,7 +197,7 @@ export default function ChatContent() {
         },
         (metadata) => {
           setMessages((prev) =>
-            prev.map((m) => (m.id === assistantId ? { ...m, answerMetadata: metadata } : m))
+            prev.map((m) => (m.id === assistantId ? { ...m, answerMetadata: metadata as Message["answerMetadata"] } : m))
           );
         },
         webSearchEnabled
@@ -215,16 +216,6 @@ export default function ChatContent() {
         return prev;
       });
     }
-  };
-
-  const formatDate = (iso: string) => {
-    try {
-      const d = new Date(iso);
-      const now = new Date();
-      const diff = now.getTime() - d.getTime();
-      if (diff < 86400000) return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-      return d.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
-    } catch { return ""; }
   };
 
   const statusIcon: Record<string, React.ReactNode> = {
@@ -260,7 +251,7 @@ export default function ChatContent() {
                   <MessageSquare className="w-3.5 h-3.5 shrink-0 text-gray-400" />
                   <div className="truncate">
                     <p className="truncate text-xs font-medium">{c.title}</p>
-                    <p className="text-xs text-gray-400">{c.message_count} 条 · {formatDate(c.updated_at)}</p>
+                    <p className="text-xs text-gray-400">{c.message_count} 条 · {formatConversationTime(c.updated_at)}</p>
                   </div>
                 </div>
                 <button onClick={(e) => handleDelete(c.id, e)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 shrink-0">

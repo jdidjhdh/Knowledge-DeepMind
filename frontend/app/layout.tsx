@@ -4,6 +4,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import Navbar from "@/components/Navbar";
 import FluidBackground from "@/components/FluidBackground";
 import PageTransition from "@/components/PageTransition";
+import NetworkStatusBar from "@/components/NetworkStatusBar";
 import "./globals.css";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+        <NetworkStatusBar />
         <AuthProvider>
           <ThemeProvider>
             <FluidBackground />
